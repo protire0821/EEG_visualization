@@ -1,211 +1,142 @@
-# EEG Viewer - Windows 桌面應用
+# EEG Visualizer
 
-專為大型 EEG 資料集設計的多通道腦波可視化工具。
+A desktop viewer for EEG recordings. Open a single file or a whole dataset
+folder, scroll through the traces, watch the scalp topography animate as it
+plays, and jump straight to annotated seizures.
 
-## 功能特色
+Built on MNE-Python for I/O, pyqtgraph for the waveform, and matplotlib for the
+topomap, in a PyQt6 shell.
 
-- ✅ **多格式支援**：EDF, BDF, FIF, SET, VHDR
-- ✅ **階層式資料集管理**：資料集 → 受試者 → 錄音檔案
-- ✅ **高效能可視化**：使用 pyqtgraph，支援大數據量即時渲染
-- ✅ **多通道顯示**：同時顯示多個通道，支援獨立選擇
-- ✅ **互動控制**：縮放、平移、時間範圍調整
-- ✅ **癲癇發作事件列表**：點擊自動跳轉，紅色高亮顯示
-- ✅ **CHB-MIT 資料集支援**：自動載入 summary 標註檔案
-- ✅ **標註支援**：顯示癲癇發作等事件標註
-- ✅ **原生 Windows 應用**：無需瀏覽器，直接存取本地檔案
+![Main window](docs/screenshots/main_window.png)
 
-## 系統需求
-
-- Windows 10/11
-- Python 3.9 或更高版本
-- 8GB RAM 以上（建議 16GB）
-
-## 安裝步驟
-
-### 1. 安裝 Python
-
-從 [python.org](https://www.python.org/downloads/) 下載並安裝 Python 3.9+
-
-### 2. 建立虛擬環境（建議）
-
-```bash
-cd C:\Code\EEG_visualization_website
-python -m venv venv
-venv\Scripts\activate
-```
-
-### 3. 安裝依賴套件
+## Install
 
 ```bash
 pip install -r requirements.txt
-```
-
-### 4. 執行程式
-
-```bash
 python main.py
 ```
 
-## 使用方式
+Python 3.10 or newer (the code uses `X | None` annotations).
 
-### CHB-MIT 癲癇資料集快速開始
+## What it does
 
-**特別支援 CHB-MIT 資料集！** 程式會自動：
-- 載入 `chb01-summary.txt` 標註檔案
-- 顯示癲癇發作事件列表
-- 在波形圖上紅色高亮標示
-- 點擊事件自動跳轉
+- **Open one recording** (`Ctrl+O`) or **a whole dataset folder** (`Ctrl+Shift+O`).
+  A folder is scanned into subjects and recordings, so a corpus like CHB-MIT
+  browses as `chb01 → chb01_03.edf` without digging through directories.
+- **Waveform** — all channels stacked, per-channel colours, with a playback
+  cursor that auto-scrolls. Channel names label the Y axis.
+- **Channel selection** — tick channels on and off; the stack re-lays out to
+  the visible set.
+- **Time window** — 1 to 300 seconds visible at once.
+- **Topomap** — instantaneous scalp potential, redrawn as playback advances,
+  on a fixed colour scale taken from the 99th percentile of the recording.
+- **Events** — every annotation found for the recording is listed; seizures are
+  shaded red on the waveform and shown in red in the list. Clicking an event
+  jumps the view to five seconds before onset.
+- **Transport** — play/pause, 0.25×–4× speed, 0.1×–5× gain, and a scrubber.
 
-**步驟：**
-1. 開啟資料集資料夾：`chb-mit/`
-2. 選擇受試者：如 `chb01`
-3. 選擇錄音：如 `chb01_03.edf`
-4. 左側自動顯示癲癇事件（如果有）
-5. 點擊事件跳轉到發作時間
+## Supported data
 
-📖 **詳細說明**：參見 [CHB_MIT_GUIDE.md](CHB_MIT_GUIDE.md)
+| | |
+|---|---|
+| Recordings | `.edf`, `.bdf`, `.fif`, `.set`, `.vhdr` (whatever MNE can read) |
+| Annotations | EDF+ embedded, CHB-MIT `-summary.txt`, CSV, TUH `.tse` / `.csv_bi` |
 
-### 開啟資料集
+Annotations are discovered automatically for a recording `rec.edf`: EDF+
+internal annotations, a sibling `rec.csv`, a per-recording `rec-summary.txt`, a
+per-subject `chbNN-summary.txt`, and `annotations.csv` in the same folder.
+Duplicates across sources are collapsed, so a seizure listed in two places
+appears once.
 
-1. **方式一：開啟整個資料集資料夾**
-   - 選單：檔案 → 開啟資料集資料夾
-   - 或按 `Ctrl+O`
-   - 選擇包含多個受試者子資料夾的根目錄
+**On the topomap and bipolar montages.** The topomap needs electrode positions,
+which come from matching channel names against MNE's `standard_1020` montage.
+CHB-MIT and most clinical recordings use bipolar pairs (`FP1-F7`, `F7-T7`), which
+do not match, so those files load with the waveform and events working and the
+topomap showing "no electrode positions". Monopolar recordings (`Fp1`, `F3`, …)
+get a working topomap.
 
-2. **方式二：開啟單一 EEG 檔案**
-   - 選單：檔案 → 開啟單一檔案
-   - 或按 `Ctrl+Shift+O`
-   - 選擇 .edf, .bdf 等檔案
+## Keyboard
 
-### 資料集結構
+| | |
+|---|---|
+| `Ctrl+O` | Open recording |
+| `Ctrl+Shift+O` | Open dataset folder |
+| `Ctrl+Q` | Quit |
 
-程式支援以下兩種資料集結構：
-
-#### 階層式結構（推薦）
-```
-dataset/
-├── subject01/
-│   ├── recording01.edf
-│   ├── recording02.edf
-│   └── recording01-summary.txt
-├── subject02/
-│   ├── recording01.edf
-│   └── ...
-└── ...
-```
-
-#### 扁平式結構
-```
-dataset/
-├── file01.edf
-├── file02.edf
-└── ...
-```
-
-### 介面操作
-
-**左側面板：**
-- 資料集資訊
-- 受試者列表
-- 錄音檔案列表
-- 檔案詳細資訊
-
-**右側面板：**
-- 控制列：時間視窗、振幅縮放、濾波器
-- 通道選擇器：選擇要顯示的通道
-- 波形顯示區：多通道波形圖
-
-**快捷操作：**
-- `◀ 上一段` / `下一段 ▶`：切換時間段
-- 拖曳圖表：平移時間軸
-- 滾輪：縮放
-- 全選/取消全選：快速選擇通道
-
-## 進階功能
-
-### 處理大型資料集（100GB+）
-
-對於非常大的資料集，建議使用預處理：
-
-```python
-# 執行預處理腳本（將建立 HDF5 索引）
-python utils/preprocess_dataset.py --input D:\EEG_Data --output dataset.h5
-```
-
-### 自訂標註格式
-
-在 `data_loader/annotation_parser.py` 中添加自訂解析器：
-
-```python
-class MyAnnotationParser(AnnotationParser):
-    def parse(self, source):
-        # 實作你的解析邏輯
-        return annotations
-```
-
-### 添加濾波器
-
-修改 `gui/main_window.py` 的 `filter_combo` 處理邏輯。
-
-## 專案結構
+## Project structure
 
 ```
-EEG_visualization_website/
-├── main.py                    # 程式入口
-├── requirements.txt           # Python 依賴
-├── gui/                       # GUI 組件
-│   ├── main_window.py        # 主視窗
-│   └── eeg_plot_widget.py    # 繪圖組件
-├── data_loader/              # 資料載入
-│   └── eeg_loader.py         # EEG 檔案載入器
-└── utils/                    # 工具函數
+main.py                     entry point — sets the Qt backend, opens the window
+core/
+  edf_reader.py             loads a recording, montage, annotations
+  annotations.py            CHB-MIT / CSV / EDF+ / TUH parsers
+  dataset.py                folder → subject → recordings scanning
+  playback.py               QTimer transport, emits frame_changed at 25 fps
+ui/
+  main_window.py            side panel, transport, wiring
+  waveform_widget.py        stacked traces, cursor, annotation regions
+  topomap_widget.py         matplotlib topomap in a Qt canvas
+utils/
+  check_dataset_channels.py CLI: report channel counts and rates per subject
+tests/                      parser and scanner tests (no GUI needed)
 ```
 
-## 常見問題
+## Tools
 
-**Q: 程式啟動很慢？**
-A: 第一次載入大檔案時，MNE 會建立快取。後續開啟會更快。
+Check that a corpus is internally consistent before working with it:
 
-**Q: 記憶體不足？**
-A: 調小「顯示時間」參數，或使用通道選擇器減少同時顯示的通道數。
-
-**Q: 支援哪些 EEG 格式？**
-A: 目前支援 EDF, BDF, FIF, SET, VHDR。需要其他格式請提 issue。
-
-**Q: 看到 "Channel names are not unique" 警告？**
-A: 這是正常的！某些 EEG 設備會產生重複的通道名稱。MNE 會自動處理（加上編號如 T8-P8-0, T8-P8-1）。程式已自動抑制此警告。
-
-**Q: 不同受試者的通道數不一樣？**
-A: 完全支援！程式會在切換檔案時自動更新通道列表。每個檔案可以有：
-- 不同數量的通道
-- 不同的通道名稱
-- 不同的採樣率
-
-**Q: 如何檢查資料集的通道配置？**
-A: 使用內建工具：
 ```bash
-python utils/check_dataset_channels.py D:\Your\EEG\Dataset
+python -m utils.check_dataset_channels /path/to/dataset
 ```
 
-**Q: 如何添加癲癇發作標註？**
-A:
-- 方法1：使用 EDF+ 格式，標註已內嵌
-- 方法2：在資料夾放置對應的 CSV 或摘要文件
-- 方法3：擴展 `AnnotationLoader` 類別
+It reads headers only and reports, per subject, how many channels each file has,
+whether the layouts and sampling rates agree, and which files failed to open.
 
-## 開發計畫
+## Tests
 
-- [ ] 即時濾波器（帶通、高通、低通）
-- [ ] 頻譜分析（FFT、時頻圖）
-- [ ] 事件標記工具
-- [ ] 匯出功能（圖片、CSV）
-- [ ] HDF5 預處理支援
-- [ ] 多檔案比較視圖
+```bash
+python -m pytest tests/ -q
+```
 
-## 授權
+The tests cover annotation parsing and dataset scanning; they do not need a
+display or any EEG data.
 
-MIT License
+## Limitations
 
-## 聯絡
+- Recordings are loaded fully into memory (`preload=True`), so a multi-hour file
+  at a high sampling rate needs the RAM to match.
+- No filtering, re-referencing, or artifact rejection — this is a viewer, not a
+  preprocessing tool.
+- The topomap redraws through matplotlib on every frame, which is the limiting
+  factor on playback smoothness for long recordings.
 
-如有問題或建議，歡迎提交 Issue。
+## Roadmap
+
+- Filter panel (band-pass, notch) and re-referencing.
+- Lazy loading for files that do not fit in memory.
+- Export the current view as PNG/SVG.
+- Spectrogram / PSD panel alongside the waveform.
+- Bipolar montage support for the topomap by deriving positions from the pair.
+- Package for `pip install` with an entry-point script.
+
+## License
+
+MIT — see `LICENSE`.
+
+Tung Lun Yang — https://github.com/protire0821
+
+## 快速開始 (中文)
+
+```bash
+pip install -r requirements.txt
+python main.py
+```
+
+`Ctrl+O` 開單一檔案，`Ctrl+Shift+O` 開整個資料集資料夾（會自動掃成「受試者 → 紀錄」兩層）。
+左側面板可勾選要顯示的通道、切換時間視窗長度，並列出所有標註事件；點任一癲癇事件會跳到發作前 5 秒，
+波形上該區段以紅色標示。
+
+支援 `.edf`／`.bdf`／`.fif`／`.set`／`.vhdr`，標註來源包含 EDF+ 內建、CHB-MIT `-summary.txt`、CSV 與 TUH `.tse`。
+
+注意：地形圖（topomap）需要電極座標，而 CHB-MIT 這類雙極導程命名（`FP1-F7`）無法對應到 10-20 montage，
+因此這類檔案會正常顯示波形與事件，但地形圖區域會顯示「無電極座標」。

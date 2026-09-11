@@ -1,1 +1,1 @@
-# 工具函數套件
+"""Command-line helpers."""

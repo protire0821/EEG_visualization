@@ -1,182 +1,107 @@
 """
-資料集通道檢查工具
+Dataset channel check — scan a folder of recordings and report, per subject:
+how many files there are, how many channels each has, and whether channel
+names and sampling rates are consistent.
 
-快速掃描整個資料集，顯示：
-- 每個受試者有多少檔案
-- 每個檔案有多少通道
-- 通道名稱是否一致
-- 採樣率是否一致
+Only file headers are read, so this is fast even on large corpora.
+
+Usage
+-----
+    python -m utils.check_dataset_channels /path/to/dataset
 """
 
+from __future__ import annotations
+
+import argparse
 import os
 import sys
-from pathlib import Path
-from collections import defaultdict
 import warnings
+from collections import Counter, defaultdict
+from pathlib import Path
+from typing import Dict, List, Tuple
 
-# 添加父目錄到路徑
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from data_loader.eeg_loader import EEGDataLoader
+from core.dataset import scan_dataset  # noqa: E402
 
 
-def analyze_dataset(root_dir: str):
-    """分析資料集的通道配置"""
+def _read_header(path: str) -> Tuple[List[str], float]:
+    """Return (channel_names, sfreq) without loading sample data."""
+    import mne
 
-    print(f"🔍 掃描資料集: {root_dir}\n")
+    ext = os.path.splitext(path)[1].lower()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        if ext in (".edf", ".bdf"):
+            raw = mne.io.read_raw_edf(path, preload=False, verbose=False)
+        elif ext == ".fif":
+            raw = mne.io.read_raw_fif(path, preload=False, verbose=False)
+        elif ext == ".set":
+            raw = mne.io.read_raw_eeglab(path, preload=False, verbose=False)
+        elif ext == ".vhdr":
+            raw = mne.io.read_raw_brainvision(path, preload=False, verbose=False)
+        else:
+            raise ValueError(f"unsupported format: {ext}")
+    return list(raw.ch_names), float(raw.info["sfreq"])
 
-    loader = EEGDataLoader()
 
-    # 掃描結構
-    structure = loader.scan_dataset(root_dir)
+def check(root: str) -> int:
+    dataset = scan_dataset(root)
+    if not dataset:
+        print(f"No recordings found under {root}")
+        return 1
 
-    print(f"📊 找到 {len(structure)} 個受試者/群組\n")
+    all_layouts: Dict[Tuple[str, ...], int] = defaultdict(int)
+    all_rates: Counter = Counter()
+    failures: List[Tuple[str, str]] = []
 
-    # 統計資訊
-    all_channels = set()
-    all_sfreqs = set()
-    channel_counts = defaultdict(int)
-    channel_sets = {}
+    for subject_id, entry in dataset.items():
+        recordings = entry["recordings"]
+        print(f"\n{subject_id}  —  {len(recordings)} recording(s)")
 
-    # 分析每個受試者
-    for subject_id, subject_info in structure.items():
-        print(f"👤 受試者: {subject_id}")
-        print(f"   檔案數: {len(subject_info['recordings'])}")
+        layouts: Dict[Tuple[str, ...], int] = defaultdict(int)
+        rates: Counter = Counter()
 
-        subject_channels = []
-        subject_sfreqs = []
-
-        for rec in subject_info['recordings'][:3]:  # 只檢查前 3 個檔案（節省時間）
+        for rec in recordings:
             try:
-                file_path = rec['path']
-
-                # 只讀取元資料，不載入資料
-                import mne
-                ext = Path(file_path).suffix.lower()
-
-                with warnings.catch_warnings():
-                    warnings.filterwarnings('ignore')
-
-                    if ext in ['.edf', '.bdf']:
-                        raw = mne.io.read_raw_edf(file_path, preload=False, verbose=False)
-                    elif ext == '.fif':
-                        raw = mne.io.read_raw_fif(file_path, preload=False, verbose=False)
-                    elif ext == '.set':
-                        raw = mne.io.read_raw_eeglab(file_path, preload=False, verbose=False)
-                    elif ext == '.vhdr':
-                        raw = mne.io.read_raw_brainvision(file_path, preload=False, verbose=False)
-                    else:
-                        continue
-
-                n_channels = len(raw.ch_names)
-                sfreq = raw.info['sfreq']
-
-                subject_channels.append(n_channels)
-                subject_sfreqs.append(sfreq)
-
-                all_channels.update(raw.ch_names)
-                all_sfreqs.add(sfreq)
-                channel_counts[n_channels] += 1
-
-                # 儲存第一個檔案的通道配置
-                if subject_id not in channel_sets:
-                    channel_sets[subject_id] = {
-                        'channels': raw.ch_names,
-                        'n_channels': n_channels,
-                        'sfreq': sfreq,
-                        'filename': rec['filename']
-                    }
-
-            except Exception as e:
-                print(f"   ⚠️  無法讀取 {rec['filename']}: {e}")
+                names, sfreq = _read_header(rec["path"])
+            except Exception as exc:
+                failures.append((rec["filename"], str(exc)))
+                print(f"  {rec['filename']:<28} ERROR  {exc}")
                 continue
 
-        if subject_channels:
-            # 檢查一致性
-            channels_consistent = len(set(subject_channels)) == 1
-            sfreq_consistent = len(set(subject_sfreqs)) == 1
+            key = tuple(names)
+            layouts[key] += 1
+            all_layouts[key] += 1
+            rates[sfreq] += 1
+            all_rates[sfreq] += 1
+            print(f"  {rec['filename']:<28} {len(names):>3} ch   {sfreq:>7.1f} Hz")
 
-            print(f"   通道數: {subject_channels[0]}", end="")
-            if not channels_consistent:
-                print(f" ⚠️ 不一致！範圍: {min(subject_channels)}-{max(subject_channels)}")
-            else:
-                print(" ✓")
+        if len(layouts) > 1:
+            print(f"  ! {len(layouts)} different channel layouts in this subject")
+        if len(rates) > 1:
+            print(f"  ! mixed sampling rates: {sorted(rates)}")
 
-            print(f"   採樣率: {subject_sfreqs[0]} Hz", end="")
-            if not sfreq_consistent:
-                print(f" ⚠️ 不一致！")
-            else:
-                print(" ✓")
-
-        print()
-
-    # 總結
-    print("=" * 60)
-    print("📈 資料集總結\n")
-
-    print(f"通道數分佈:")
-    for n_ch in sorted(channel_counts.keys()):
-        print(f"  {n_ch} 個通道: {channel_counts[n_ch]} 個檔案")
-
-    print(f"\n採樣率:")
-    for sfreq in sorted(all_sfreqs):
-        print(f"  {sfreq} Hz")
-
-    print(f"\n唯一通道名稱總數: {len(all_channels)}")
-
-    # 顯示每個受試者的通道配置範例
-    print("\n" + "=" * 60)
-    print("📋 通道配置範例\n")
-
-    for subject_id, config in list(channel_sets.items())[:3]:  # 只顯示前 3 個
-        print(f"受試者: {subject_id} ({config['filename']})")
-        print(f"  {config['n_channels']} 個通道 @ {config['sfreq']} Hz")
-        print(f"  通道: {', '.join(config['channels'][:10])}", end="")
-        if len(config['channels']) > 10:
-            print(f" ... (還有 {len(config['channels']) - 10} 個)")
-        else:
-            print()
-        print()
+    print("\n" + "-" * 60)
+    print(f"Subjects: {len(dataset)}   Recordings: {sum(len(e['recordings']) for e in dataset.values())}")
+    print(f"Distinct channel layouts: {len(all_layouts)}")
+    for layout, count in sorted(all_layouts.items(), key=lambda kv: -kv[1])[:5]:
+        print(f"  {count:>4} file(s): {len(layout)} ch — {', '.join(layout[:6])}"
+              f"{' …' if len(layout) > 6 else ''}")
+    print(f"Sampling rates: {', '.join(f'{r:g} Hz ({n})' for r, n in sorted(all_rates.items()))}")
+    if failures:
+        print(f"\n{len(failures)} file(s) could not be read:")
+        for name, err in failures[:10]:
+            print(f"  {name}: {err}")
+    return 0
 
 
-def compare_subjects(root_dir: str, subject1: str, subject2: str):
-    """比較兩個受試者的通道配置"""
-
-    loader = EEGDataLoader()
-    structure = loader.scan_dataset(root_dir)
-
-    if subject1 not in structure or subject2 not in structure:
-        print("❌ 找不到指定的受試者")
-        return
-
-    print(f"🔬 比較受試者: {subject1} vs {subject2}\n")
-
-    for subject_id in [subject1, subject2]:
-        rec = structure[subject_id]['recordings'][0]
-        data, info = loader.load_file(rec['path'])
-
-        print(f"📁 {subject_id} ({rec['filename']})")
-        print(f"   通道數: {info['n_channels']}")
-        print(f"   採樣率: {info['sfreq']} Hz")
-        print(f"   通道: {', '.join(info['ch_names'])}")
-        print()
-
-
-if __name__ == '__main__':
-    import argparse
-
-    parser = argparse.ArgumentParser(description='檢查 EEG 資料集的通道配置')
-    parser.add_argument('dataset_path', help='資料集根目錄路徑')
-    parser.add_argument('--compare', nargs=2, metavar=('SUBJECT1', 'SUBJECT2'),
-                       help='比較兩個受試者的通道配置')
-
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[1])
+    parser.add_argument("dataset", help="folder holding the recordings")
     args = parser.parse_args()
+    return check(args.dataset)
 
-    if not os.path.exists(args.dataset_path):
-        print(f"❌ 路徑不存在: {args.dataset_path}")
-        sys.exit(1)
 
-    if args.compare:
-        compare_subjects(args.dataset_path, args.compare[0], args.compare[1])
-    else:
-        analyze_dataset(args.dataset_path)
+if __name__ == "__main__":
+    raise SystemExit(main())

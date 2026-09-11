@@ -1,28 +1,36 @@
 """
-EEG Viewer - Windows Desktop Application
-主程式入口
+EEG Visualizer — entry point.
+
+Sets the matplotlib Qt backend *before* any matplotlib import, then
+launches the PyQt6 application using the new ui/core architecture.
 """
 
 import sys
+import os
+
+# Must be set before any matplotlib import
+os.environ.setdefault("MPLBACKEND", "QtAgg")
+
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
-from gui.main_window import MainWindow
+
+from ui.main_window import MainWindow
+
 
 def main():
-    # 啟用高 DPI 支援
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
 
     app = QApplication(sys.argv)
-    app.setApplicationName("EEG Viewer")
+    app.setApplicationName("EEG Visualizer")
     app.setOrganizationName("EEG Research")
 
-    # 建立主視窗
     window = MainWindow()
     window.show()
 
     sys.exit(app.exec())
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
