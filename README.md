@@ -7,7 +7,7 @@ plays, and jump straight to annotated seizures.
 Built on MNE-Python for I/O, pyqtgraph for the waveform, and matplotlib for the
 topomap, in a PyQt6 shell.
 
-![Main window](docs/screenshots/main_window.png)
+![Main window](docs/image/page_demo.png)
 
 ## Install
 

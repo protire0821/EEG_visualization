@@ -23,15 +23,16 @@ from __future__ import annotations
 
 import os
 from typing import Any, Dict, List
+from zipfile import Path
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QPushButton, QSlider, QLabel, QFileDialog, QSizePolicy,
     QListWidget, QListWidgetItem, QGroupBox, QCheckBox, QScrollArea,
-    QSpinBox, QMessageBox,
+    QSpinBox, QMessageBox
 )
 from PyQt6.QtCore import Qt, pyqtSlot
-from PyQt6.QtGui import QAction, QColor
+from PyQt6.QtGui import QAction, QColor, QIcon
 
 from core.edf_reader import EDFReader
 from core.playback import PlaybackController
@@ -48,6 +49,8 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("EEG Visualizer")
         self.resize(1500, 820)
+        
+        self.setWindowIcon(QIcon("ui/EEG_visualizer_icon.png"))
 
         self._reader = EDFReader()
         self._playback = PlaybackController(self)
