@@ -1,0 +1,31 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# EEG data — never commit recordings or corpora
+*.edf
+*.bdf
+*.fif
+*.set
+*.fdt
+*.vhdr
+*.eeg
+data/
+datasets/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# AI assistant
+.claude/

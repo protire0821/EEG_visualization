@@ -6,13 +6,15 @@ Layout
 ------
   ┌──────────────────────────────────────────────────────────────┐
   │  File                                                        │  menu bar
+  ├──────────────────────────────────────────────────────────────┤
+  │  Sens [70 µV]  Window [10 s]  HP [0.5] LP [70] Notch [50] ⟳  │  filter bar
   ├──────────────┬───────────────┬───────────────────────────────┤
   │ Subjects     │               │                               │
   │ Recordings   │   Topomap     │          Waveform             │
   │ Channels     │               │                               │
   │ Events       │               │                               │
   ├──────────────┴───────────────┴───────────────────────────────┤
-  │  [Play]  Speed ───  Gain ───  Window [10 s]                  │
+  │  [Play]  Speed ───────────────                               │
   │  0.0 s  [═════════════ scrubber ═══════════════════]  300 s  │
   ├──────────────────────────────────────────────────────────────┤
   │  Status bar                                                  │
@@ -23,25 +25,36 @@ from __future__ import annotations
 
 import os
 from typing import Any, Dict, List
-from zipfile import Path
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QPushButton, QSlider, QLabel, QFileDialog, QSizePolicy,
     QListWidget, QListWidgetItem, QGroupBox, QCheckBox, QScrollArea,
-    QSpinBox, QMessageBox
+    QComboBox, QMessageBox, QFrame,
 )
 from PyQt6.QtCore import Qt, pyqtSlot
-from PyQt6.QtGui import QAction, QColor, QIcon
+from PyQt6.QtGui import QAction, QColor
 
 from core.edf_reader import EDFReader
 from core.playback import PlaybackController
 from core.dataset import scan_dataset
+from core.filters import FilterSettings, FilterError
 from ui.topomap_widget import TopoMapWidget
 from ui.waveform_widget import WaveformWidget
 
 # How far before a seizure onset to jump when an event is clicked.
 PRE_ONSET_SEC = 5.0
+
+# Clinical sensitivity steps, in microvolts between channel baselines.
+SENSITIVITIES = [2, 3, 5, 7, 10, 15, 20, 30, 50, 70, 100, 150, 200, 300]
+
+# Review window lengths in seconds.
+WINDOWS = [5, 10, 15, 20, 30, 60, 120, 300]
+
+# Filter presets. "Off" disables the stage.
+HIGH_PASS = ["Off", "0.1", "0.3", "0.5", "1", "1.6", "5"]
+LOW_PASS = ["Off", "15", "30", "35", "45", "70", "100", "120"]
+NOTCH = ["Off", "50", "60"]
 
 
 class MainWindow(QMainWindow):
@@ -49,8 +62,6 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("EEG Visualizer")
         self.resize(1500, 820)
-        
-        self.setWindowIcon(QIcon("ui/EEG_visualizer_icon.png"))
 
         self._reader = EDFReader()
         self._playback = PlaybackController(self)
@@ -74,6 +85,8 @@ class MainWindow(QMainWindow):
         root_layout.setContentsMargins(6, 6, 6, 4)
         root_layout.setSpacing(4)
 
+        root_layout.addWidget(self._build_filter_bar())
+
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
 
         self._splitter.addWidget(self._build_side_panel())
@@ -95,6 +108,61 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             "Ready — File ▸ Open recording, or File ▸ Open dataset folder"
         )
+
+    @staticmethod
+    def _combo(items, current, width: int) -> QComboBox:
+        box = QComboBox()
+        box.addItems([str(i) for i in items])
+        box.setCurrentText(str(current))
+        box.setFixedWidth(width)
+        return box
+
+    def _build_filter_bar(self) -> QWidget:
+        bar = QFrame()
+        bar.setFrameShape(QFrame.Shape.StyledPanel)
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(6)
+
+        layout.addWidget(QLabel("Sens:"))
+        self._sens_combo = self._combo(SENSITIVITIES, 70, 62)
+        layout.addWidget(self._sens_combo)
+        layout.addWidget(QLabel("µV"))
+
+        layout.addSpacing(14)
+        layout.addWidget(QLabel("Window:"))
+        self._window_combo = self._combo(WINDOWS, 10, 62)
+        layout.addWidget(self._window_combo)
+        layout.addWidget(QLabel("s"))
+
+        layout.addSpacing(14)
+        layout.addWidget(QLabel("HP:"))
+        self._hp_combo = self._combo(HIGH_PASS, "0.5", 70)
+        layout.addWidget(self._hp_combo)
+
+        layout.addWidget(QLabel("LP:"))
+        self._lp_combo = self._combo(LOW_PASS, "70", 70)
+        layout.addWidget(self._lp_combo)
+
+        layout.addWidget(QLabel("Notch:"))
+        self._notch_combo = self._combo(NOTCH, "50", 62)
+        layout.addWidget(self._notch_combo)
+
+        self._apply_btn = QPushButton("Apply")
+        self._apply_btn.setFixedWidth(64)
+        layout.addWidget(self._apply_btn)
+
+        self._filter_label = QLabel("")
+        self._filter_label.setStyleSheet("color: gray; font-size: 11px;")
+        layout.addWidget(self._filter_label)
+
+        layout.addStretch()
+        self._bipolar_label = QLabel("")
+        self._bipolar_label.setStyleSheet(
+            "color: #b26500; font-size: 11px; font-weight: bold;"
+        )
+        layout.addWidget(self._bipolar_label)
+        return bar
 
     def _build_side_panel(self) -> QWidget:
         panel = QWidget()
@@ -186,26 +254,6 @@ class MainWindow(QMainWindow):
         self._speed_label.setFixedWidth(48)
         row1.addWidget(self._speed_label)
 
-        row1.addSpacing(16)
-        row1.addWidget(QLabel("Gain:"))
-        self._gain_slider = QSlider(Qt.Orientation.Horizontal)
-        self._gain_slider.setRange(1, 50)         # 0.1× – 5.0×
-        self._gain_slider.setValue(10)            # 1.0×
-        self._gain_slider.setFixedWidth(130)
-        row1.addWidget(self._gain_slider)
-        self._gain_label = QLabel("1.0×")
-        self._gain_label.setFixedWidth(44)
-        row1.addWidget(self._gain_label)
-
-        row1.addSpacing(16)
-        row1.addWidget(QLabel("Window:"))
-        self._window_spin = QSpinBox()
-        self._window_spin.setRange(1, 300)
-        self._window_spin.setValue(10)
-        self._window_spin.setSuffix(" s")
-        self._window_spin.setFixedWidth(78)
-        row1.addWidget(self._window_spin)
-
         row1.addStretch()
         ctrl_layout.addLayout(row1)
 
@@ -251,8 +299,9 @@ class MainWindow(QMainWindow):
     def _setup_connections(self) -> None:
         self._play_btn.clicked.connect(self._on_play_pause)
         self._speed_slider.valueChanged.connect(self._on_speed_changed)
-        self._gain_slider.valueChanged.connect(self._on_gain_changed)
-        self._window_spin.valueChanged.connect(self._on_window_changed)
+        self._sens_combo.currentTextChanged.connect(self._on_sens_changed)
+        self._window_combo.currentTextChanged.connect(self._on_window_changed)
+        self._apply_btn.clicked.connect(self._on_apply_filters)
 
         self._scrubber.sliderPressed.connect(self._on_scrubber_pressed)
         self._scrubber.sliderMoved.connect(self._on_scrubber_moved)
@@ -272,8 +321,8 @@ class MainWindow(QMainWindow):
         self._playback.playback_finished.connect(self._on_playback_finished)
 
     def _set_controls_enabled(self, enabled: bool) -> None:
-        for w in (self._play_btn, self._speed_slider, self._gain_slider,
-                  self._scrubber, self._window_spin):
+        for w in (self._play_btn, self._speed_slider, self._scrubber,
+                  self._apply_btn):
             w.setEnabled(enabled)
 
     # ------------------------------------------------------------------
@@ -333,7 +382,8 @@ class MainWindow(QMainWindow):
         self._topomap.set_reader(self._reader)
         self._waveform.set_data(self._reader.data, self._reader.times, self._reader.ch_names)
         self._waveform.set_annotations(self._reader.annotations)
-        self._waveform.set_window_seconds(self._window_spin.value())
+        self._waveform.set_window_seconds(float(self._window_combo.currentText()))
+        self._waveform.set_sensitivity(float(self._sens_combo.currentText()))
 
         self._build_channel_boxes(self._reader.ch_names)
         self._populate_events(self._reader.annotations)
@@ -347,20 +397,32 @@ class MainWindow(QMainWindow):
 
         self._cur_time_label.setText("0.0 s")
         self._tot_time_label.setText(f"{self._reader.duration:.1f} s")
-        self._on_gain_changed(self._gain_slider.value())
         self._set_controls_enabled(True)
+        self._filter_label.setText(
+            self._reader.filter_warning or self._reader.filters.describe()
+        )
+        self._bipolar_label.setText(
+            "Bipolar recording — no topomap"
+            if self._reader.is_bipolar and not self._reader.has_montage
+            else ""
+        )
 
         topo_msg = (
             f"{len(self._reader.montage_channels)} channels positioned"
             if self._reader.has_montage
             else "no electrode positions — topomap unavailable"
         )
+        filt_msg = (
+            f"unfiltered ({self._reader.filter_warning})"
+            if self._reader.filter_warning
+            else self._reader.filters.describe()
+        )
         n_seiz = len(self._reader.seizures)
         seiz_msg = f"{n_seiz} seizure{'s' if n_seiz != 1 else ''}" if n_seiz else "no seizures"
         self.statusBar().showMessage(
             f"{os.path.basename(path)}  |  {len(self._reader.ch_names)} channels  |  "
             f"{self._reader.duration:.1f} s  |  {self._reader.sfreq:.0f} Hz  |  "
-            f"{topo_msg}  |  {seiz_msg}"
+            f"{topo_msg}  |  {seiz_msg}  |  {filt_msg}"
         )
 
     # ------------------------------------------------------------------
@@ -506,12 +568,50 @@ class MainWindow(QMainWindow):
         self._speed_label.setText(f"{speed:.2f}×")
         self._playback.set_speed(speed)
 
-    @pyqtSlot(int)
-    def _on_gain_changed(self, value: int) -> None:
-        gain = value * 0.1
-        self._gain_label.setText(f"{gain:.1f}×")
-        self._waveform.set_gain(gain)
+    def _on_sens_changed(self, text: str) -> None:
+        self._waveform.set_sensitivity(float(text))
 
-    @pyqtSlot(int)
-    def _on_window_changed(self, value: int) -> None:
-        self._waveform.set_window_seconds(float(value))
+    def _on_window_changed(self, text: str) -> None:
+        self._waveform.set_window_seconds(float(text))
+
+    @staticmethod
+    def _value(text: str):
+        return None if text == "Off" else float(text)
+
+    def _current_filters(self) -> FilterSettings:
+        return FilterSettings(
+            high_pass=self._value(self._hp_combo.currentText()),
+            low_pass=self._value(self._lp_combo.currentText()),
+            notch=self._value(self._notch_combo.currentText()),
+        )
+
+    def _apply_filters_to_reader(self, announce: bool = True) -> bool:
+        """Re-filter the loaded recording. Returns False if it was rejected."""
+        settings = self._current_filters()
+        if announce:
+            self.statusBar().showMessage(f"Filtering — {settings.describe()} …")
+            self.repaint()
+        try:
+            self._reader.set_filters(settings)
+        except FilterError as exc:
+            self.statusBar().showMessage(f"Filter not applied: {exc}")
+            QMessageBox.warning(self, "Filter settings", str(exc))
+            return False
+        self._filter_label.setText(settings.describe())
+        return True
+
+    def _on_apply_filters(self) -> None:
+        if self._reader.raw_data is None:
+            return
+        was_playing = self._playback.is_playing
+        self._playback.pause()
+        if self._apply_filters_to_reader():
+            self._waveform.set_channel_data(self._reader.data)
+            self._topomap.set_reader(self._reader)
+            self._topomap.update_frame(self._playback.current_frame)
+            self.statusBar().showMessage(
+                f"Applied {self._reader.filters.describe()}"
+            )
+        if was_playing:
+            self._playback.play()
+            self._play_btn.setText("⏸  Pause")

@@ -1,9 +1,11 @@
 """
 Multi-channel EEG waveform widget built on pyqtgraph.
 
-Channels are stacked vertically with a spacing derived from the signal
-amplitude. A red cursor line follows playback and the view auto-scrolls to keep
-it visible. Seizure annotations are drawn as shaded regions behind the traces.
+Channels are stacked vertically one sensitivity step apart, the way a clinical
+review station lays them out: at 70 µV, the gap between two channel baselines
+*is* 70 µV, so a lower number magnifies the traces. A red cursor line follows
+playback and the view auto-scrolls to keep it visible. Annotations are drawn as
+shaded regions behind the traces.
 
 Usage
 -----
@@ -11,13 +13,14 @@ Usage
     widget.set_data(data, times, ch_names)    # after loading a recording
     widget.set_annotations(reader.annotations)
     widget.update_cursor(frame_idx)           # connect to frame_changed
-    widget.set_gain(1.5)
+    widget.set_sensitivity(70)                # µV between channel baselines
     widget.set_visible_channels([0, 1, 4])
     widget.set_window_seconds(30)
 """
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
@@ -28,6 +31,27 @@ from PyQt6.QtCore import pyqtSlot
 from PyQt6.QtGui import QColor
 
 from core.annotations import is_seizure
+
+
+def _enable_opengl() -> bool:
+    """
+    Opt into pyqtgraph's OpenGL line renderer with EEGVIZ_OPENGL=1.
+
+    It is off by default because it is not a guaranteed win: pyqtgraph's GL path
+    skips some drawing features, and on many machines the CPU renderer is
+    already fast enough once clipping and downsampling are on. Try it if
+    playback still stutters; it needs PyOpenGL (`pip install PyOpenGL`).
+    """
+    if os.environ.get("EEGVIZ_OPENGL", "") not in ("1", "true", "True"):
+        return False
+    try:
+        import OpenGL  # noqa: F401
+    except ImportError:
+        print("[waveform] EEGVIZ_OPENGL is set but PyOpenGL is not installed; "
+              "falling back to the CPU renderer")
+        return False
+    pg.setConfigOptions(useOpenGL=True, enableExperimental=True)
+    return True
 
 # Distinct colours for channel curves (cycled when there are more channels)
 _CHANNEL_COLORS = [
@@ -45,6 +69,7 @@ class WaveformWidget(QWidget):
     """Stacked multi-channel EEG display with a scrolling playback cursor."""
 
     DEFAULT_WINDOW_SEC = 10.0
+    DEFAULT_SENSITIVITY_UV = 70.0
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -52,8 +77,7 @@ class WaveformWidget(QWidget):
         self._times: Optional[np.ndarray] = None
         self._ch_names: List[str] = []
         self._visible: List[int] = []
-        self._gain: float = 1.0
-        self._spacing: float = 1.0
+        self._sens_uv: float = self.DEFAULT_SENSITIVITY_UV
         self._window_sec: float = self.DEFAULT_WINDOW_SEC
         self._curves: List[pg.PlotDataItem] = []
         self._regions: List[pg.LinearRegionItem] = []
@@ -71,11 +95,22 @@ class WaveformWidget(QWidget):
 
         pg.setConfigOption("background", "#1e1e1e")
         pg.setConfigOption("foreground", "#cccccc")
+        pg.setConfigOption("antialias", False)
+        self.opengl = _enable_opengl()
 
         self._plot = pg.PlotWidget()
         self._plot.setLabel("bottom", "Time", units="s")
         self._plot.showGrid(x=True, y=False, alpha=0.3)
         self._plot.getViewBox().setMouseEnabled(x=True, y=False)
+
+        # A whole recording is far more samples than the screen has pixels.
+        # clipToView renders only the visible window and peak downsampling keeps
+        # spikes visible while drawing one min/max pair per pixel column —
+        # without these, an hour-long file costs ~600 ms per repaint instead of
+        # ~17 ms, and playback turns into a slideshow.
+        item = self._plot.getPlotItem()
+        item.setClipToView(True)
+        item.setDownsampling(auto=True, mode="peak")
 
         self._cursor = pg.InfiniteLine(
             angle=90, movable=False, pen=pg.mkPen(color="#ff4444", width=2)
@@ -94,8 +129,15 @@ class WaveformWidget(QWidget):
         self._times = times
         self._ch_names = list(ch_names)
         self._visible = list(range(len(self._ch_names)))
-        self._compute_spacing(data)
         self._rebuild_curves()
+
+    def set_channel_data(self, data: np.ndarray) -> None:
+        """Swap in re-filtered samples, keeping the current view and selection."""
+        if self._data is None or data.shape != self._data.shape:
+            return
+        self._data = data
+        for row, ch in enumerate(self._visible):
+            self._curves[row].setData(self._times, data[ch] + row * self._spacing)
 
     def set_visible_channels(self, indices: Sequence[int]) -> None:
         """Show only the channels at *indices* (in their original order)."""
@@ -161,26 +203,42 @@ class WaveformWidget(QWidget):
         self._plot.setXRange(new_min, new_min + window, padding=0)
         self._cursor.setPos(t)
 
-    def set_gain(self, gain: float) -> None:
-        """Update amplitude scaling for all channels (spacing is unchanged)."""
-        if self._data is None or gain == self._gain:
+    def set_sensitivity(self, microvolts: float) -> None:
+        """
+        Set how many microvolts separate two channel baselines. This is the
+        clinical sensitivity control: 70 µV is a typical review setting, and a
+        smaller number makes the traces larger.
+        """
+        microvolts = max(1.0, float(microvolts))
+        if microvolts == self._sens_uv:
             return
-        self._gain = gain
+        self._sens_uv = microvolts
+        self._reposition()
+
+    @property
+    def _spacing(self) -> float:
+        """Baseline separation in data units (MNE returns volts)."""
+        return self._sens_uv * 1e-6
+
+    def _reposition(self) -> None:
+        """Re-apply the vertical offsets after a sensitivity change."""
+        if self._data is None or not self._visible:
+            return
         for row, ch in enumerate(self._visible):
-            self._curves[row].setData(self._times, self._data[ch] * gain + row * self._spacing)
+            self._curves[row].setData(self._times, self._data[ch] + row * self._spacing)
+        self._plot.getAxis("left").setTicks(
+            [[(row * self._spacing, self._ch_names[ch])
+              for row, ch in enumerate(self._visible)]]
+        )
+        self._plot.setYRange(
+            -self._spacing * 0.6,
+            (len(self._visible) - 0.4) * self._spacing,
+            padding=0,
+        )
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
-
-    def _compute_spacing(self, data: np.ndarray) -> None:
-        """Set channel spacing to about three times the median channel RMS."""
-        if data.shape[0] == 0:
-            self._spacing = 1.0
-            return
-        rms = np.sqrt(np.mean(data ** 2, axis=1))
-        median_rms = float(np.median(rms[rms > 0])) if np.any(rms > 0) else 1.0
-        self._spacing = max(median_rms * 3.0, 1e-12)
 
     def _rebuild_curves(self) -> None:
         """Drop the old curves and create one per visible channel."""
@@ -195,7 +253,7 @@ class WaveformWidget(QWidget):
         for row, ch in enumerate(self._visible):
             curve = self._plot.plot(
                 self._times,
-                self._data[ch] * self._gain + row * self._spacing,
+                self._data[ch] + row * self._spacing,
                 pen=pg.mkPen(_CHANNEL_COLORS[ch % len(_CHANNEL_COLORS)], width=1),
                 name=self._ch_names[ch],
                 antialias=False,

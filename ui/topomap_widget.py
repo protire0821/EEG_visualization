@@ -10,7 +10,10 @@ Usage
     widget.update_frame(frame_idx)     # connect to PlaybackController.frame_changed
 """
 
+import time
 import warnings
+from typing import Optional
+
 import numpy as np
 
 import matplotlib
@@ -25,20 +28,32 @@ from matplotlib.figure import Figure
 import mne
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout
-from PyQt6.QtCore import pyqtSlot
+from PyQt6.QtCore import pyqtSlot, QTimer
 
 
 class TopoMapWidget(QWidget):
     """Animated topomap powered by mne.viz.plot_topomap()."""
+
+    # A matplotlib topomap costs ~40 ms to draw, which on its own eats the whole
+    # 40 ms budget of 25 fps playback. Scalp topography changes slowly enough to
+    # read at ~8 fps, so redraws are throttled and the most recent frame is
+    # always drawn last — a seek never leaves a stale map on screen.
+    _MIN_REDRAW_MS = 120
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._reader = None
         self._vmin: float = -1e-4
         self._vmax: float = 1e-4
+        self._last_draw_ms: float = -1e9
+        self._pending_frame: Optional[int] = None
+
+        self._flush_timer = QTimer(self)
+        self._flush_timer.setSingleShot(True)
+        self._flush_timer.timeout.connect(self._flush_pending)
 
         self._setup_ui()
-        self._show_placeholder("Load an EDF file\nto see the topomap")
+        self._show_placeholder("Load a recording\nto see the topomap")
 
     # ------------------------------------------------------------------
     # Setup
@@ -62,8 +77,11 @@ class TopoMapWidget(QWidget):
         """Configure widget for a newly loaded EDFReader."""
         self._reader = reader
 
-        if reader is None or not reader.has_montage:
-            self._show_placeholder("No electrode positions\navailable in this file")
+        if reader is None:
+            self._show_placeholder("Load a recording\nto see the topomap")
+            return
+        if not reader.has_montage:
+            self._show_placeholder(reader.montage_status)
             return
 
         # Compute a fixed, symmetric colour range from the data
@@ -74,14 +92,41 @@ class TopoMapWidget(QWidget):
         self._vmin, self._vmax = -abs_max, abs_max
 
         # Draw frame 0 immediately
+        self._last_draw_ms = -1e9
+        self._pending_frame = None
         self.update_frame(0)
 
     @pyqtSlot(int)
     def update_frame(self, frame_idx: int):
-        """Redraw the topomap for *frame_idx*.  Connected to frame_changed."""
+        """
+        Request a redraw for *frame_idx*. Connected to frame_changed; redraws
+        are throttled to _MIN_REDRAW_MS and the latest request always wins.
+        """
         if self._reader is None or not self._reader.has_montage:
             return
 
+        now = time.monotonic() * 1000.0
+        elapsed = now - self._last_draw_ms
+        if elapsed < self._MIN_REDRAW_MS:
+            self._pending_frame = frame_idx
+            if not self._flush_timer.isActive():
+                self._flush_timer.start(int(self._MIN_REDRAW_MS - elapsed))
+            return
+
+        self._pending_frame = None
+        self._last_draw_ms = now
+        self._draw(frame_idx)
+
+    def _flush_pending(self):
+        if self._pending_frame is None:
+            return
+        frame_idx = self._pending_frame
+        self._pending_frame = None
+        self._last_draw_ms = time.monotonic() * 1000.0
+        self._draw(frame_idx)
+
+    def _draw(self, frame_idx: int):
+        """Render the topomap for *frame_idx*."""
         data, info = self._reader.get_topomap_data(frame_idx)
         if data is None:
             return
@@ -138,9 +183,10 @@ class TopoMapWidget(QWidget):
             transform=self._ax.transAxes,
             ha="center",
             va="center",
-            color="#888888",
-            fontsize=11,
+            color="#777777",
+            fontsize=8.5,
             multialignment="center",
+            wrap=True,
         )
         self._ax.set_xticks([])
         self._ax.set_yticks([])
